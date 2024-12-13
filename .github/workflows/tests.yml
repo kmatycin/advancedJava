@@ -1,0 +1,76 @@
+name: Run Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Student Code
+        uses: actions/checkout@v3
+
+      - name: Checkout Test Repo
+        env:
+          TOKEN: ${{ secrets.TEST_REPO_TOKEN }}
+        run: |
+          if git clone https://$TOKEN@github.com/kmatycin/Dunice-JAdvanced-tests.git tests; then
+            echo "Test repository cloned successfully."
+          else
+            echo "Failed to clone the test repository."
+            exit 1
+          fi
+
+      - name: Move Tests to Default Test Directory
+        run: |
+          mkdir -p src/test/java
+          if [ -d "tests/src/test/java" ]; then
+            cp -r tests/src/test/java/* src/test/java/
+            echo "Tests moved to the default test directory."
+          else
+            echo "No tests found in the expected directory."
+            exit 1
+          fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build and Test
+        id: test
+        run: mvn clean test -DtrimStackTrace=true | tee test-results.txt
+
+      - name: List target directory
+        run: ls -R target
+
+      - name: Verify Test Reports Directory
+        run: |
+          if [ -d "target/surefire-reports" ]; then
+            echo "Reports directory exists";
+          else
+            echo "Reports directory not found";
+            exit 1;
+          fi
+
+      - name: Upload Test Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-report
+          path: target/surefire-reports
+
+      - name: Post Results to PR via API
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          TOKEN: ${{ secrets.TEST_REPO_TOKEN }}
+        run: |
+          TEST_RESULTS=$(grep -E "expected|but was|Tests run|Failures|Errors|Skipped" test-results.txt | grep -v "is started..." | tail -n 50)
+          COMMENT_BODY=$(echo -e "### Test Results\n\`\`\`\n$TEST_RESULTS\n\`\`\`" | jq -Rsa .)
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          curl -s -X POST -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"body\": $COMMENT_BODY}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
